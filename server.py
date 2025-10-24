@@ -58,9 +58,11 @@ def odbierz_rame(polaczenie: socket.socket):
     else:
         raise ValueError(f"Nieznany typ ramki: {naglowek!r}")
 
-def wyslij_token(polaczenie: socket.socket, token: str):
-    dane = token.encode("utf-8")
+def wyslij_token(polaczenie: socket.socket, token: str, licznik: int):
+    obiekt = {"token": token, "ostatni_licznik": licznik}
+    dane = json.dumps(obiekt, ensure_ascii=False).encode("utf-8")
     polaczenie.sendall(b"TOKN" + struct.pack("!I", len(dane)) + dane)
+
 
 def wyslij_odpowiedz(polaczenie: socket.socket, ok: bool, komunikat: str, extra: dict | None = None):
     obiekt = {"ok": ok, "komunikat": komunikat}
@@ -93,7 +95,10 @@ def obsluz_logowanie(polaczenie: socket.socket, dane: bytes):
         KLUCZ_JWT,
         algorithm=ALG_JWT,
     )
-    wyslij_token(polaczenie, token)
+
+    ostatni = ostatnie_liczniki.get(id_urzadzenia, 0)
+    wyslij_token(polaczenie, token, ostatni)
+
 
 def obsluz_rejestracje(polaczenie: socket.socket, dane: bytes):
     try:
