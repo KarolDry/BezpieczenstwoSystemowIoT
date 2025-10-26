@@ -174,7 +174,7 @@ def main():
         print(f"Serwer nasłuchuje na {HOST}:{PORT}")
         while True:
             polaczenie, adres = serwer.accept()
-            threading.Thread(target=watek_klienta, args=(polaczenie, adres), daemon=True).start()  #
+            threading.Thread(target=watek_klienta, args=(polaczenie, adres), daemon=True).start()
 
 if __name__ == "__main__":
     main()
