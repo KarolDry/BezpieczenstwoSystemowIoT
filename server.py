@@ -7,6 +7,12 @@ import secrets
 from typing import Dict
 import jwt
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from supabase import create_client, Client
+from datetime import datetime
+
+SUPABASE_URL = "https://dhbbffcuzinfqyhzchkt.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRoYmJmZmN1emluZnF5aHpjaGt0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MjQxOTEwOSwiZXhwIjoyMDc3OTk1MTA5fQ.agtBdXFut-8dWFiQbsX11PTPL4l-usKc-00VNmWifwI"
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 HOST = "0.0.0.0"
 PORT = 9000
@@ -20,14 +26,9 @@ KLUCZ_AES = bytes.fromhex(
     "101112131415161718191a1b1c1d1e1f"
 )
 
-URZADZENIA: Dict[str, str] = {
-    "czujnik-1": "klucz_czujnik_1",
-    "czujnik-2": "klucz_czujnik_2",
-}
-
 ADMIN_KEY = "admin_secret"
-
 ostatnie_liczniki: Dict[str, int] = {}
+
 
 def odbierz_dokladnie(polaczenie: socket.socket, n: int) -> bytes:
     dane = b""
@@ -58,18 +59,43 @@ def odbierz_rame(polaczenie: socket.socket):
     else:
         raise ValueError(f"Nieznany typ ramki: {naglowek!r}")
 
-def wyslij_token(polaczenie: socket.socket, token: str, licznik: int):
-    obiekt = {"token": token, "ostatni_licznik": licznik}
-    dane = json.dumps(obiekt, ensure_ascii=False).encode("utf-8")
-    polaczenie.sendall(b"TOKN" + struct.pack("!I", len(dane)) + dane)
-
-
 def wyslij_odpowiedz(polaczenie: socket.socket, ok: bool, komunikat: str, extra: dict | None = None):
     obiekt = {"ok": ok, "komunikat": komunikat}
     if extra:
         obiekt.update(extra)
     dane = json.dumps(obiekt, ensure_ascii=False).encode("utf-8")
     polaczenie.sendall(b"ACKN" + struct.pack("!I", len(dane)) + dane)
+
+def wyslij_token(polaczenie: socket.socket, token: str, licznik: int):
+    obiekt = {"token": token, "ostatni_licznik": licznik}
+    dane = json.dumps(obiekt, ensure_ascii=False).encode("utf-8")
+    polaczenie.sendall(b"TOKN" + struct.pack("!I", len(dane)) + dane)
+
+
+def pobierz_urzadzenie(id_urzadzenia: str):
+    print(id_urzadzenia)
+    supabase.table("devices").select("*").execute()
+    wynik = supabase.table("devices").select("*").eq("id_urzadzenia", id_urzadzenia).execute()
+    print(wynik)
+    if wynik.data:
+        return wynik.data[0]
+    return None
+
+def zapisz_urzadzenie(id_urzadzenia: str, klucz: str):
+    supabase.table("devices").insert({
+        "id_urzadzenia": id_urzadzenia,
+        "klucz": klucz
+    }).execute()
+
+def zapisz_log(id_urzadzenia: str, licznik: int, tresc: dict, komunikat: str):
+    supabase.table("logs").insert({
+        "id_urzadzenia": id_urzadzenia,
+        "licznik": licznik,
+        "tresc": tresc,
+        "komunikat": komunikat,
+        "czas": datetime.utcnow().isoformat()
+    }).execute()
+
 
 def obsluz_logowanie(polaczenie: socket.socket, dane: bytes):
     try:
@@ -80,7 +106,8 @@ def obsluz_logowanie(polaczenie: socket.socket, dane: bytes):
         wyslij_odpowiedz(polaczenie, False, "Błędny format logowania")
         return
 
-    if URZADZENIA.get(id_urzadzenia) != klucz:
+    urz = pobierz_urzadzenie(id_urzadzenia)
+    if not urz or urz["klucz"] != klucz:
         wyslij_odpowiedz(polaczenie, False, "Niepoprawne dane logowania")
         return
 
@@ -99,7 +126,6 @@ def obsluz_logowanie(polaczenie: socket.socket, dane: bytes):
     ostatni = ostatnie_liczniki.get(id_urzadzenia, 0)
     wyslij_token(polaczenie, token, ostatni)
 
-
 def obsluz_rejestracje(polaczenie: socket.socket, dane: bytes):
     try:
         req = json.loads(dane.decode("utf-8"))
@@ -114,20 +140,17 @@ def obsluz_rejestracje(polaczenie: socket.socket, dane: bytes):
         wyslij_odpowiedz(polaczenie, False, "Niepoprawny klucz administratora")
         return
 
-    if id_new in URZADZENIA:
+    if pobierz_urzadzenie(id_new):
         wyslij_odpowiedz(polaczenie, False, "Urządzenie już istnieje")
         return
 
-    URZADZENIA[id_new] = klucz_new
+    zapisz_urzadzenie(id_new, klucz_new)
     wyslij_odpowiedz(polaczenie, True, f"Zarejestrowano urządzenie {id_new}")
 
 def obsluz_dane(polaczenie: socket.socket, token: bytes, nonce: bytes, szyfrogram: bytes):
     try:
         dane_tokena = jwt.decode(token, KLUCZ_JWT, algorithms=[ALG_JWT])
         id_urzadzenia = dane_tokena["idUrzadzenia"]
-    except jwt.ExpiredSignatureError:
-        wyslij_odpowiedz(polaczenie, False, "Token wygasł")
-        return
     except Exception as e:
         wyslij_odpowiedz(polaczenie, False, f"Błąd tokena: {e}")
         return
@@ -149,7 +172,10 @@ def obsluz_dane(polaczenie: socket.socket, token: bytes, nonce: bytes, szyfrogra
 
     print(f"[{id_urzadzenia}] #{licznik}: {json.dumps(wiadomosc, ensure_ascii=False)}")
 
+    zapisz_log(id_urzadzenia, licznik, wiadomosc, "OK")
+
     wyslij_odpowiedz(polaczenie, True, "OK", {"otrzymano_licznik": licznik})
+
 
 def watek_klienta(polaczenie: socket.socket, adres):
     with polaczenie:
